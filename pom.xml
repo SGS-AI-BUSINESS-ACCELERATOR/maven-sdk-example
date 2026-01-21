@@ -1,0 +1,140 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <groupId>com.example</groupId>
+    <artifactId>datastudio-sdk-example</artifactId>
+    <version>1.0.0-SNAPSHOT</version>
+    <packaging>jar</packaging>
+
+    <name>SGS DataStudio SDK Example</name>
+    <description>Example project demonstrating how to integrate the SGS AI DataStudio Java SDK</description>
+
+    <properties>
+        <maven.compiler.source>21</maven.compiler.source>
+        <maven.compiler.target>21</maven.compiler.target>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <datastudio.sdk.version>0.1.0-alpha</datastudio.sdk.version>
+    </properties>
+
+    <!--
+        Repository configuration for SGS AI Accelerator Maven Repository.
+        Authentication requires a service account key.
+        See README.md for setup instructions.
+    -->
+    <repositories>
+        <repository>
+            <id>sgs-ai-accelerator-maven</id>
+            <name>SGS AI Accelerator Maven Repository</name>
+            <url>https://us-maven.pkg.dev/sgs-ai-acc-gen-dev/sgs-ai-accelerator-maven</url>
+            <releases>
+                <enabled>true</enabled>
+            </releases>
+            <snapshots>
+                <enabled>false</enabled>
+            </snapshots>
+        </repository>
+    </repositories>
+
+    <dependencies>
+        <!-- SGS AI DataStudio SDK -->
+        <dependency>
+            <groupId>sgs.ai.accelerator</groupId>
+            <artifactId>sgs-ai-datastudio-sdk-java</artifactId>
+            <version>${datastudio.sdk.version}</version>
+        </dependency>
+
+        <!-- JSON Processing (transitive dependency, but declared for clarity) -->
+        <dependency>
+            <groupId>org.json</groupId>
+            <artifactId>json</artifactId>
+            <version>20250517</version>
+        </dependency>
+
+        <!-- Logging -->
+        <dependency>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-api</artifactId>
+            <version>2.0.9</version>
+        </dependency>
+        <!-- SLF4J bridge to java.util.logging -->
+        <dependency>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-jdk14</artifactId>
+            <version>2.0.9</version>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <version>3.11.0</version>
+                <configuration>
+                    <source>21</source>
+                    <target>21</target>
+                </configuration>
+            </plugin>
+
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <version>3.1.2</version>
+            </plugin>
+
+            <!-- Exec plugin to run examples easily -->
+            <plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>exec-maven-plugin</artifactId>
+                <version>3.1.0</version>
+                <configuration>
+                    <mainClass>com.example.datastudio.Application</mainClass>
+                </configuration>
+            </plugin>
+
+            <!-- JAR with dependencies for standalone execution -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-shade-plugin</artifactId>
+                <version>3.5.1</version>
+                <executions>
+                    <execution>
+                        <phase>package</phase>
+                        <goals>
+                            <goal>shade</goal>
+                        </goals>
+                        <configuration>
+                            <transformers>
+                                <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
+                                    <mainClass>com.example.datastudio.Application</mainClass>
+                                </transformer>
+                            </transformers>
+                            <createDependencyReducedPom>false</createDependencyReducedPom>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
+
+    <profiles>
+        <!-- Profile for running with sandbox environment -->
+        <profile>
+            <id>sandbox</id>
+            <properties>
+                <datastudio.environment>SAND_BOX</datastudio.environment>
+            </properties>
+        </profile>
+
+        <!-- Profile for running with production environment -->
+        <profile>
+            <id>production</id>
+            <properties>
+                <datastudio.environment>PROD</datastudio.environment>
+            </properties>
+        </profile>
+    </profiles>
+</project>
