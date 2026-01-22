@@ -15,7 +15,7 @@ This project demonstrates how to integrate the **SGS AI DataStudio Java S
 - [Error Handling](#error-handling)
 - [Best Practices](#best-practices)
 - [Troubleshooting](#troubleshooting)
-- [Keeping Dependencies Updated](#keeping-dependencies-updated)
+- [Keeping Dependencies Updated](#keeping-dependencies-updated) ⚠️
 
 ## Prerequisites
 
@@ -620,7 +620,17 @@ If you see `401 Unauthorized` or `403 Forbidden` errors:
 
 ## Keeping Dependencies Updated
 
-You can configure GitHub Dependabot to automatically check for new SDK versions and create pull requests when updates are available.
+> ⚠️ **Why is this important?**
+>
+> The SGS AI DataStudio SDK is hosted in a **private Google Artifact Registry**, not in Maven Central. This means standard Dependabot configurations won't detect new SDK versions automatically.
+>
+> Properly configuring Dependabot ensures you receive:
+> - **Security patches** — Critical fixes for vulnerabilities
+> - **Bug fixes** — Stability improvements and corrections
+> - **New features** — Access to the latest SDK capabilities
+> - **Performance improvements** — Optimizations and enhancements
+>
+> Without this configuration, your project may run outdated SDK versions with known security issues or missing functionality.
 
 ### Setup Dependabot
 
