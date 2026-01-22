@@ -1,6 +1,6 @@
 # SGS AI DataStudio SDK - Maven Integration Example
 
-This project demonstrates how to integrate the **SGS AI DataStudio Java SDK** into a Maven-based Java application. It provides practical examples for document processing, including upload and webhook-based event handling.
+This project demonstrates how to integrate the **SGS AI DataStudio Java S
 
 ## Table of Contents
 
@@ -11,9 +11,11 @@ This project demonstrates how to integrate the **SGS AI DataStudio Java SDK** in
 - [Configuration](#configuration)
 - [Usage Examples](#usage-examples)
 - [API Reference](#api-reference)
+- [Integration Flow](#integration-flow)
 - [Error Handling](#error-handling)
 - [Best Practices](#best-practices)
 - [Troubleshooting](#troubleshooting)
+- [Keeping Dependencies Updated](#keeping-dependencies-updated)
 
 ## Prerequisites
 
@@ -394,6 +396,118 @@ doc.getStructuredFieldAsString("invoice_number")
 | `document.ready_for_review` | Document processed, ready for human review |
 | `document.completed` | Document processing fully completed |
 
+## Integration Flow
+
+This diagram shows the complete flow for AI document extraction with human review.
+
+```mermaid
+sequenceDiagram
+    participant FE as Frontend
+    participant BE as Backend API
+    participant DB as Database
+    participant SDK as DataStudio SDK
+    participant DS as SGS DataStudio
+    participant Proxy as Secure Proxy
+
+    Note over FE,DS: STEP 1 - User submits document for AI extraction
+
+    FE->>BE: POST /ai/extract (PDF file)
+    BE->>BE: Validate PDF & user permissions
+    BE->>SDK: uploadDocument()
+    SDK->>DS: Upload document
+    DS-->>SDK: processId
+    SDK-->>BE: UploadResult
+    BE->>DB: INSERT process (status=IN_PROGRESS)
+    BE-->>FE: 202 Accepted {processId}
+
+    Note over FE,DS: STEP 2 - AI processes document (async)
+
+    FE->>FE: Show "AI analysis in progress"
+
+    loop Polling every 5s (fast processing < 1 min)
+        FE->>BE: GET /ai/status/{docId}
+        BE->>DB: SELECT status
+        BE-->>FE: {status: IN_PROGRESS}
+    end
+
+    Note over FE,DS: STEP 3 - AI completes, ready for human review
+
+    DS->>BE: Webhook READY_FOR_REVIEW
+    BE->>DB: UPDATE status=READY_FOR_REVIEW, review_url
+
+    FE->>BE: GET /ai/status/{docId}
+    BE-->>FE: {status: READY_FOR_REVIEW, review_url}
+    FE->>FE: Show "Review & Import" button
+
+    Note over FE,DS: STEP 4 - User reviews/corrects in DataStudio
+
+    FE->>Proxy: Open review page (JWT auth)
+    Proxy->>Proxy: Validate JWT, sanitize headers
+    Proxy->>DS: Forward request
+    DS-->>Proxy: Review UI
+    Proxy-->>FE: Stream response
+
+    Note over FE,DS: User reviews and corrects extracted data
+
+    Note over FE,DS: STEP 5 - User confirms extraction
+
+    FE->>DS: Click "Confirm & Push"
+    DS->>BE: Webhook COMPLETED {extracted_data}
+    BE->>DB: UPDATE status=COMPLETED, extracted_data
+
+    Note over FE,DS: STEP 6 - User imports data
+
+    FE->>BE: GET /ai/status/{docId}
+    BE-->>FE: {status: COMPLETED}
+    FE->>FE: Show Append/Replace/Cancel options
+
+    FE->>BE: POST /ai/import {action: append|replace}
+    BE->>DB: Read extracted_data
+    BE->>DB: Persist items
+    BE-->>FE: Import result
+
+    FE->>FE: Display imported items
+```
+
+### Flow Description
+
+**STEP 1 - Upload Document**
+
+User uploads a PDF through the frontend. The backend validates the file and user permissions, then uses the SDK to send the document to SGS DataStudio. DataStudio returns a `processId` which is stored in the database with status `IN_PROGRESS`. The frontend receives `202 Accepted` and displays a loading spinner.
+
+**STEP 2 - AI Processing (async)**
+
+While DataStudio AI processes the document (OCR, data extraction), the frontend polls `/ai/status/{docId}` every 5 seconds. The user sees "AI analysis in progress..." until processing completes (typically < 1 minute).
+
+**STEP 3 - Ready for Human Review**
+
+When AI processing finishes, DataStudio sends a `READY_FOR_REVIEW` webhook containing a `review_url`. The backend updates the database status. The next frontend poll detects the change and displays the **"Review & Import"** button.
+
+**STEP 4 - Human Review in DataStudio**
+
+User clicks "Review & Import" which opens the DataStudio review page (via Secure Proxy). The user can view all extracted data and **correct any AI errors** before confirming.
+
+**STEP 5 - User Confirms Extraction**
+
+Once satisfied with the data, the user clicks **"Confirm & Push"** in DataStudio. This triggers a `COMPLETED` webhook containing the `structured_data` JSON. The backend stores this data in the database.
+
+**STEP 6 - Import Data**
+
+The frontend detects `status=COMPLETED` and shows import options: **Append** | **Replace** | **Cancel**. The user chooses how to import the extracted items.
+
+### Status Flow Summary
+
+| Step | Action | DB Status |
+|------|--------|-----------|
+| 1 | Upload PDF | `IN_PROGRESS` |
+| 2 | AI processes | `IN_PROGRESS` |
+| 3 | AI completes | `READY_FOR_REVIEW` |
+| 4 | User reviews/corrects | `READY_FOR_REVIEW` |
+| 5 | User approves | `COMPLETED` |
+| 6 | User imports | *(items persisted)* |
+
+> **Key point**: Human review is mandatory before import. AI extracts the data, but the user validates it.
+
 ## Error Handling
 
 The SDK provides specific exception types for different error scenarios:
@@ -503,6 +617,53 @@ If you see `401 Unauthorized` or `403 Forbidden` errors:
 1. Verify your `~/.m2/settings.xml` contains the correct server configuration
 2. Ensure the server `<id>` matches exactly: `sgs-ai-accelerator-maven`
 3. Confirm your service account key is base64-encoded in the `<password>` field
+
+## Keeping Dependencies Updated
+
+You can configure GitHub Dependabot to automatically check for new SDK versions and create pull requests when updates are available.
+
+### Setup Dependabot
+
+Create `.github/dependabot.yml` in your repository:
+
+```yaml
+version: 2
+
+registries:
+  sgs-ai-accelerator-maven:
+    type: maven-repository
+    url: https://us-maven.pkg.dev/sgs-ai-acc-gen-dev/sgs-ai-accelerator-maven
+    username: _json_key_base64
+    password: ${{secrets.GCP_ARTIFACT_REGISTRY_KEY}}
+
+updates:
+  - package-ecosystem: "maven"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    registries:
+      - sgs-ai-accelerator-maven
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+```
+
+> **IMPORTANT**: Since the SDK is hosted in a private Google Artifact Registry, you must configure a GitHub secret with your service account credentials for Dependabot to access it.
+
+### Configure GitHub Secret
+
+1. Go to your repository on GitHub
+2. Navigate to **Settings** → **Secrets and variables** → **Dependabot**
+3. Click **New repository secret**
+4. Name: `GCP_ARTIFACT_REGISTRY_KEY`
+5. Value: Your service account key encoded in base64
+
+```bash
+# Generate the base64-encoded key from your service account JSON file:
+cat /path/to/your-service-account-key.json | base64 -w 0
+```
+
+Once configured, Dependabot will automatically create pull requests when new versions of the SDK or other dependencies are released.
 
 ## License
 
