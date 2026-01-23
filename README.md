@@ -28,13 +28,15 @@ This project demonstrates how to integrate the **SGS AI DataStudio Java S
 
 ### 1. Configure Maven Repository Access
 
+The SDK is hosted on private Registry. 
+
 Add your repository credentials to `~/.m2/settings.xml`:
 
 ```xml
 <settings>
   <servers>
     <server>
-      <id>sgs-ai-accelerator-maven</id>
+      <id>artifact-registry</id>
       <username>_json_key_base64</username>
       <password>YOUR_BASE64_ENCODED_SERVICE_ACCOUNT_KEY</password>
     </server>
@@ -42,7 +44,49 @@ Add your repository credentials to `~/.m2/settings.xml`:
 </settings>
 ```
 
-### 2. Set Environment Variables
+### 2. Configure pom.xml
+
+Your `pom.xml` must include the following configuration to access the SDK repository:
+
+```xml
+<project>
+  <distributionManagement>
+    <snapshotRepository>
+      <id>artifact-registry</id>
+      <url>artifactregistry://us-maven.pkg.dev/sgs-ai-acc-gen-prod/sgs-ai-accelerator-maven</url>
+    </snapshotRepository>
+    <repository>
+      <id>artifact-registry</id>
+      <url>artifactregistry://us-maven.pkg.dev/sgs-ai-acc-gen-prod/sgs-ai-accelerator-maven</url>
+    </repository>
+  </distributionManagement>
+
+  <repositories>
+    <repository>
+      <id>artifact-registry</id>
+      <url>artifactregistry://us-maven.pkg.dev/sgs-ai-acc-gen-prod/sgs-ai-accelerator-maven</url>
+      <releases>
+        <enabled>true</enabled>
+      </releases>
+      <snapshots>
+        <enabled>true</enabled>
+      </snapshots>
+    </repository>
+  </repositories>
+
+  <build>
+    <extensions>
+      <extension>
+        <groupId>com.google.cloud.artifactregistry</groupId>
+        <artifactId>artifactregistry-maven-wagon</artifactId>
+        <version>2.2.0</version>
+      </extension>
+    </extensions>
+  </build>
+</project>
+```
+
+### 3. Set Environment Variables
 
 ```bash
 # Required
@@ -55,13 +99,13 @@ export DATASTUDIO_USER=your_username
 export DATASTUDIO_WEBHOOK_PORT=8080     # default: 8080
 ```
 
-### 3. Build the Project
+### 4. Build the Project
 
 ```bash
 mvn clean package
 ```
 
-### 4. Run the Application
+### 5. Run the Application
 
 ```bash
 # Run with a document
@@ -615,8 +659,9 @@ The `-U` flag forces Maven to check for updated releases and snapshots.
 If you see `401 Unauthorized` or `403 Forbidden` errors:
 
 1. Verify your `~/.m2/settings.xml` contains the correct server configuration
-2. Ensure the server `<id>` matches exactly: `sgs-ai-accelerator-maven`
+2. Ensure the server `<id>` matches exactly: `artifact-registry`
 3. Confirm your service account key is base64-encoded in the `<password>` field
+4. Verify the service account has `Artifact Registry Reader` role on the `sgs-ai-acc-gen-prod` project
 
 ## Keeping Dependencies Updated
 
@@ -630,9 +675,9 @@ Create `.github/dependabot.yml` in your repository:
 version: 2
 
 registries:
-  sgs-ai-accelerator-maven:
+  artifact-registry:
     type: maven-repository
-    url: https://us-maven.pkg.dev/sgs-ai-acc-gen-dev/sgs-ai-accelerator-maven
+    url: https://us-maven.pkg.dev/sgs-ai-acc-gen-prod/sgs-ai-accelerator-maven
     username: _json_key_base64
     password: ${{secrets.GCP_ARTIFACT_REGISTRY_KEY}}
 
@@ -642,7 +687,7 @@ updates:
     schedule:
       interval: "weekly"
     registries:
-      - sgs-ai-accelerator-maven
+      - artifact-registry
     open-pull-requests-limit: 5
     labels:
       - "dependencies"

@@ -24,16 +24,26 @@
         Authentication requires a service account key.
         See README.md for setup instructions.
     -->
+    <distributionManagement>
+        <snapshotRepository>
+            <id>artifact-registry</id>
+            <url>artifactregistry://us-maven.pkg.dev/sgs-ai-acc-gen-prod/sgs-ai-accelerator-maven</url>
+        </snapshotRepository>
+        <repository>
+            <id>artifact-registry</id>
+            <url>artifactregistry://us-maven.pkg.dev/sgs-ai-acc-gen-prod/sgs-ai-accelerator-maven</url>
+        </repository>
+    </distributionManagement>
+
     <repositories>
         <repository>
-            <id>sgs-ai-accelerator-maven</id>
-            <name>SGS AI Accelerator Maven Repository</name>
-            <url>https://us-maven.pkg.dev/sgs-ai-acc-gen-dev/sgs-ai-accelerator-maven</url>
+            <id>artifact-registry</id>
+            <url>artifactregistry://us-maven.pkg.dev/sgs-ai-acc-gen-prod/sgs-ai-accelerator-maven</url>
             <releases>
                 <enabled>true</enabled>
             </releases>
             <snapshots>
-                <enabled>false</enabled>
+                <enabled>true</enabled>
             </snapshots>
         </repository>
     </repositories>
@@ -68,6 +78,13 @@
     </dependencies>
 
     <build>
+        <extensions>
+            <extension>
+                <groupId>com.google.cloud.artifactregistry</groupId>
+                <artifactId>artifactregistry-maven-wagon</artifactId>
+                <version>2.2.0</version>
+            </extension>
+        </extensions>
         <plugins>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
