@@ -3,7 +3,7 @@ version: 2
 registries:
   sgs-ai-accelerator-maven:
     type: maven-repository
-    url: https://us-maven.pkg.dev/sgs-ai-acc-gen-dev/sgs-ai-accelerator-maven
+    url: https://us-maven.pkg.dev/sgs-ai-acc-gen-prod/sgs-ai-accelerator-maven
     username: _json_key_base64
     password: ${{secrets.GCP_ARTIFACT_REGISTRY_KEY}}
 
