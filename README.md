@@ -53,18 +53,18 @@ Your `pom.xml` must include the following configuration to access the SDK reposi
   <distributionManagement>
     <snapshotRepository>
       <id>artifact-registry</id>
-      <url>artifactregistry://us-maven.pkg.dev/sgs-ai-acc-gen-prod/sgs-ai-accelerator-maven</url>
+      <url>https://us-maven.pkg.dev/sgs-ai-acc-gen-prod/sgs-ai-accelerator-maven</url>
     </snapshotRepository>
     <repository>
       <id>artifact-registry</id>
-      <url>artifactregistry://us-maven.pkg.dev/sgs-ai-acc-gen-prod/sgs-ai-accelerator-maven</url>
+      <url>https://us-maven.pkg.dev/sgs-ai-acc-gen-prod/sgs-ai-accelerator-maven</url>
     </repository>
   </distributionManagement>
 
   <repositories>
     <repository>
       <id>artifact-registry</id>
-      <url>artifactregistry://us-maven.pkg.dev/sgs-ai-acc-gen-prod/sgs-ai-accelerator-maven</url>
+      <url>https://us-maven.pkg.dev/sgs-ai-acc-gen-prod/sgs-ai-accelerator-maven</url>
       <releases>
         <enabled>true</enabled>
       </releases>
@@ -73,16 +73,6 @@ Your `pom.xml` must include the following configuration to access the SDK reposi
       </snapshots>
     </repository>
   </repositories>
-
-  <build>
-    <extensions>
-      <extension>
-        <groupId>com.google.cloud.artifactregistry</groupId>
-        <artifactId>artifactregistry-maven-wagon</artifactId>
-        <version>2.2.0</version>
-      </extension>
-    </extensions>
-  </build>
 </project>
 ```
 
