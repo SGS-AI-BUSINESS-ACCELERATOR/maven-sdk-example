@@ -98,12 +98,17 @@ mvn clean package
 ### 5. Run the Application
 
 ```bash
-# Run with a document
+# Linux/macOS
 mvn exec:java -Dexec.args="/path/to/document.pdf"
 
-# Or run the JAR directly
+# Windows (PowerShell/CMD) - quotes must wrap the entire property
+mvn exec:java "-Dexec.args=C:\path\to\document.pdf"
+
+# Or run the JAR directly (all platforms)
 java -jar target/datastudio-sdk-example-1.0.0-SNAPSHOT.jar /path/to/document.pdf
 ```
+
+> **Note:** On Windows, the `-D` property must be quoted as a single argument (`"-Dexec.args=..."`). On Linux/macOS, both syntaxes work.
 
 ## Local Development Guide
 
@@ -166,7 +171,11 @@ examples/
 **Run with the example export declaration:**
 
 ```bash
+# Linux/macOS
 mvn exec:java -Dexec.args="src/main/resources/examples/export-declaration/example_custom_export.pdf"
+
+# Windows (PowerShell/CMD)
+mvn exec:java "-Dexec.args=src\main\resources\examples\export-declaration\example_custom_export.pdf"
 ```
 
 **Or using the JAR directly:**
