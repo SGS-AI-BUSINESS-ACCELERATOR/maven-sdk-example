@@ -16,7 +16,7 @@
         <maven.compiler.source>21</maven.compiler.source>
         <maven.compiler.target>21</maven.compiler.target>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-        <datastudio.sdk.version>0.1.11-alpha</datastudio.sdk.version>
+        <datastudio.sdk.version>0.1.12-alpha</datastudio.sdk.version>
     </properties>
 
     <!--
