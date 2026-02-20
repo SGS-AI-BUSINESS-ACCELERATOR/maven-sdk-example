@@ -1,5 +1,6 @@
 package com.example.datastudio.service;
 
+import ai.accelerator.CountryCode;
 import ai.accelerator.DataStudioSDK;
 import ai.accelerator.DataStudioSDK.*;
 import ai.accelerator.exceptions.*;
@@ -123,7 +124,7 @@ public class DocumentProcessorService {
         logger.info("Uploading document: {} as {}", filePath.getFileName(), docType);
 
         // Upload the document
-        UploadResult uploadResult = sdk.uploadDocument(userName, docType, filePath, metadata);
+        UploadResult uploadResult = sdk.uploadDocument(userName, docType, filePath, metadata, CountryCode.ES);
         String processId = uploadResult.processId();
 
         logger.info("Document uploaded with processId: {}, initial status: {}",
@@ -195,6 +196,27 @@ public class DocumentProcessorService {
             throws DataStudioException {
         logger.info("Uploading document: {}", filePath.getFileName());
         return sdk.uploadDocument(userName, docType, filePath, metadata);
+    }
+
+    /**
+     * Upload a document without waiting for results, specifying a country code.
+     *
+     * @param userName    Username for tracking
+     * @param docType     Type of document
+     * @param filePath    Path to the PDF file
+     * @param metadata    Optional metadata
+     * @param countryCode Country code for the document
+     * @return UploadResult containing the processId and initial status
+     * @throws DataStudioException If upload fails
+     */
+    public UploadResult uploadDocument(String userName,
+                                       DocType docType,
+                                       Path filePath,
+                                       Map<String, String> metadata,
+                                       CountryCode countryCode)
+            throws DataStudioException {
+        logger.info("Uploading document: {} with country: {}", filePath.getFileName(), countryCode);
+        return sdk.uploadDocument(userName, docType, filePath, metadata, countryCode);
     }
 
     /**

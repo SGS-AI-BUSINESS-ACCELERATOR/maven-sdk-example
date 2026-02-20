@@ -1,5 +1,6 @@
 package com.example.datastudio.service;
 
+import ai.accelerator.CountryCode;
 import ai.accelerator.DataStudioSDK;
 import ai.accelerator.DataStudioSDK.*;
 import ai.accelerator.exceptions.DataStudioException;
@@ -146,7 +147,7 @@ public class BatchDocumentProcessor {
                                                Map<String, String> metadata) {
         try {
             // Upload
-            UploadResult uploadResult = sdk.uploadDocument(userName, docType, path, metadata);
+            UploadResult uploadResult = sdk.uploadDocument(userName, docType, path, metadata, CountryCode.ES);
             String processId = uploadResult.processId();
 
             // Poll for result with exponential backoff
