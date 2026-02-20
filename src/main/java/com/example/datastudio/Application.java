@@ -1,5 +1,6 @@
 package com.example.datastudio;
 
+import ai.accelerator.CountryCode;
 import ai.accelerator.DataStudioSDK;
 import ai.accelerator.DataStudioSDK.*;
 import ai.accelerator.exceptions.*;
@@ -156,7 +157,8 @@ public class Application {
                 config.userName(),
                 DocType.EXPORT_DECLARATION,
                 path,
-                metadata
+                metadata,
+                CountryCode.ES
             );
             logger.info("Document uploaded successfully");
             System.out.println("\nDocument uploaded. Webhook events will be printed as they arrive.\n");
