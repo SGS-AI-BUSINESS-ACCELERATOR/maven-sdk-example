@@ -31,6 +31,7 @@ import java.util.function.Consumer;
  * DataStudioSDK sdk = DataStudioSDK.Builder.aDataStudioSDK()
  *     .withApiKey("your-api-key")
  *     .withEnvironment(Environments.PROD)
+ *     .withDefaultHeaders(Map.of("X-Custom-Header", "value"))
  *     .build();
  *
  * DocumentProcessorService processor = new DocumentProcessorService(sdk);
