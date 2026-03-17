@@ -102,6 +102,7 @@ public class Application {
         return DataStudioSDK.Builder.aDataStudioSDK()
                 .withApiKey(config.apiKey())
                 .withEnvironment(config.environment())
+                .withDefaultHeaders(config.defaultHeaders())
                 .withWebhooks(
                     new WebHook(Events.READY_FOR_REVIEW, config.webhookUrl() + "/ready"),
                     new WebHook(Events.COMPLETED, config.webhookUrl() + "/completed")
