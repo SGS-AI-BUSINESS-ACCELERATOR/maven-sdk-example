@@ -4,12 +4,15 @@ import ai.accelerator.CountryCode;
 import ai.accelerator.DataStudioSDK;
 import ai.accelerator.DataStudioSDK.*;
 import ai.accelerator.exceptions.*;
+import ai.accelerator.wait.WaitStrategy;
 import org.json.JSONObject;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -18,103 +21,56 @@ import java.util.function.Consumer;
 /**
  * Service class for processing documents using the DataStudio SDK.
  *
- * <p>This service provides:
- * <ul>
- *   <li>Synchronous document upload and processing</li>
- *   <li>Asynchronous document processing with callbacks</li>
- *   <li>Configurable polling with exponential backoff</li>
- *   <li>Comprehensive status tracking</li>
- * </ul>
- *
- * <p>Example usage:
- * <pre>{@code
- * DataStudioSDK sdk = DataStudioSDK.Builder.aDataStudioSDK()
- *     .withApiKey("your-api-key")
- *     .withEnvironment(Environments.PROD)
- *     .withDefaultHeaders(Map.of("X-Custom-Header", "value"))
- *     .build();
- *
- * DocumentProcessorService processor = new DocumentProcessorService(sdk);
- *
- * // Synchronous processing
- * JSONObject result = processor.uploadAndWaitForResult(
- *     "user@example.com",
- *     DocType.INVOICE,
- *     Path.of("/path/to/invoice.pdf"),
- *     Map.of("orderId", "ORD-123")
- * );
- *
- * // Asynchronous processing
- * processor.uploadAndProcessAsync(
- *     "user@example.com",
- *     DocType.EXPORT_DECLARATION,
- *     Path.of("/path/to/declaration.pdf"),
- *     null,
- *     result -> System.out.println("Processed: " + result),
- *     error -> System.err.println("Failed: " + error.getMessage())
- * );
- * }</pre>
+ * <p>Since SDK 0.2.0-alpha this service no longer hand-rolls a polling loop:
+ * it relies on the SDK's built-in {@code waitForCompletion(...)} which polls
+ * {@code getStatus} until the document reaches a terminal state
+ * ({@code completed}, {@code ready_for_review}, {@code failed},
+ * {@code review_expired}) or the {@link WaitStrategy} budget is exceeded.
  */
 public class DocumentProcessorService {
 
     private static final Logger logger = LoggerFactory.getLogger(DocumentProcessorService.class);
 
-    private static final int DEFAULT_MAX_ATTEMPTS = 30;
-    private static final long DEFAULT_INITIAL_DELAY_MS = 2000;
-    private static final long DEFAULT_MAX_DELAY_MS = 30000;
-    private static final double BACKOFF_MULTIPLIER = 2.0;
+    private static final Duration DEFAULT_POLL_INTERVAL = Duration.ofSeconds(2);
+    private static final Duration DEFAULT_MAX_WAIT = Duration.ofMinutes(5);
+
+    /** Terminal statuses returned by the API in the {@code status} field of the wait payload. */
+    private static final Set<String> SUCCESSFUL_TERMINAL_STATES =
+            Set.of("completed", "ready_for_review");
+    private static final Set<String> FAILED_TERMINAL_STATES =
+            Set.of("failed", "review_expired");
 
     private final DataStudioSDK sdk;
     private final ExecutorService executorService;
-    private final int maxAttempts;
-    private final long initialDelayMs;
-    private final long maxDelayMs;
+    private final WaitStrategy waitStrategy;
 
     /**
-     * Create a new DocumentProcessorService with default settings.
-     *
-     * @param sdk The initialized DataStudio SDK instance
+     * Create a new service with default wait settings (2 s poll interval, 5 min budget).
      */
     public DocumentProcessorService(DataStudioSDK sdk) {
-        this(sdk, DEFAULT_MAX_ATTEMPTS, DEFAULT_INITIAL_DELAY_MS, DEFAULT_MAX_DELAY_MS);
+        this(sdk, new WaitStrategy(DEFAULT_POLL_INTERVAL, DEFAULT_MAX_WAIT));
     }
 
     /**
-     * Create a new DocumentProcessorService with custom polling settings.
+     * Create a new service with a custom {@link WaitStrategy}.
      *
-     * @param sdk            The initialized DataStudio SDK instance
-     * @param maxAttempts    Maximum polling attempts before timeout
-     * @param initialDelayMs Initial delay between polls in milliseconds
-     * @param maxDelayMs     Maximum delay between polls in milliseconds
+     * @param sdk          The initialized SDK instance.
+     * @param waitStrategy Polling strategy passed to {@code sdk.waitForCompletion(...)}.
      */
-    public DocumentProcessorService(DataStudioSDK sdk,
-                                    int maxAttempts,
-                                    long initialDelayMs,
-                                    long maxDelayMs) {
+    public DocumentProcessorService(DataStudioSDK sdk, WaitStrategy waitStrategy) {
         this.sdk = sdk;
-        this.maxAttempts = maxAttempts;
-        this.initialDelayMs = initialDelayMs;
-        this.maxDelayMs = maxDelayMs;
+        this.waitStrategy = waitStrategy;
         this.executorService = Executors.newCachedThreadPool();
     }
 
     /**
-     * Upload a document and wait for the result synchronously.
+     * Upload a document and block until the SDK reports a terminal state.
      *
-     * <p>This method will block until the document is processed or an error occurs.
-     * Uses exponential backoff for polling the status.
+     * <p>Returns the full result payload from {@code sdk.getResult(processId)}.
      *
-     * @param userName Username for tracking
-     * @param docType  Type of document (INVOICE or EXPORT_DECLARATION)
-     * @param filePath Path to the PDF file
-     * @param metadata Optional metadata key-value pairs
-     * @return The processing result as a JSONObject
-     * @throws FileValidationException   If the file doesn't exist or exceeds size limits
-     * @throws AuthenticationException   If authentication fails
-     * @throws NetworkException          If network errors occur
-     * @throws ServerException           If server errors occur
-     * @throws DataStudioException       For other SDK errors
-     * @throws InterruptedException      If the thread is interrupted while waiting
+     * @throws DataStudioException  on upload failure, terminal {@code failed}/{@code review_expired},
+     *                              or wait timeout (rethrown as-is from the SDK).
+     * @throws InterruptedException if the polling thread is interrupted.
      */
     public JSONObject uploadAndWaitForResult(String userName,
                                              DocType docType,
@@ -124,35 +80,21 @@ public class DocumentProcessorService {
 
         logger.info("Uploading document: {} as {}", filePath.getFileName(), docType);
 
-        // Upload the document
         UploadResult uploadResult = sdk.uploadDocument(userName, docType, filePath, metadata, CountryCode.ES);
         String processId = uploadResult.processId();
 
         logger.info("Document uploaded with processId: {}, initial status: {}",
                 processId, uploadResult.status());
 
-        // If upload failed immediately, throw an exception
         if (uploadResult.status() == UploadResultStatus.FAILED) {
             throw new DataStudioException("Document upload failed immediately");
         }
 
-        // Poll for completion
-        return pollForResult(processId);
+        return waitForResult(processId);
     }
 
     /**
-     * Upload a document and process it asynchronously.
-     *
-     * <p>This method returns immediately and executes the processing in a background thread.
-     * Results are delivered via callbacks.
-     *
-     * @param userName      Username for tracking
-     * @param docType       Type of document
-     * @param filePath      Path to the PDF file
-     * @param metadata      Optional metadata
-     * @param onSuccess     Callback for successful processing
-     * @param onError       Callback for errors
-     * @return CompletableFuture that completes when processing is done
+     * Upload a document and process it asynchronously, delivering the result via callbacks.
      */
     public CompletableFuture<JSONObject> uploadAndProcessAsync(
             String userName,
@@ -179,16 +121,7 @@ public class DocumentProcessorService {
     }
 
     /**
-     * Upload a document without waiting for results.
-     *
-     * <p>Use this when you have webhooks configured or want to poll manually.
-     *
-     * @param userName Username for tracking
-     * @param docType  Type of document
-     * @param filePath Path to the PDF file
-     * @param metadata Optional metadata
-     * @return UploadResult containing the processId and initial status
-     * @throws DataStudioException If upload fails
+     * Upload a document without waiting (use when you have webhooks configured).
      */
     public UploadResult uploadDocument(String userName,
                                        DocType docType,
@@ -200,15 +133,7 @@ public class DocumentProcessorService {
     }
 
     /**
-     * Upload a document without waiting for results, specifying a country code.
-     *
-     * @param userName    Username for tracking
-     * @param docType     Type of document
-     * @param filePath    Path to the PDF file
-     * @param metadata    Optional metadata
-     * @param countryCode Country code for the document
-     * @return UploadResult containing the processId and initial status
-     * @throws DataStudioException If upload fails
+     * Upload a document without waiting, specifying a country code.
      */
     public UploadResult uploadDocument(String userName,
                                        DocType docType,
@@ -222,11 +147,6 @@ public class DocumentProcessorService {
 
     /**
      * Check the current status of a document.
-     *
-     * @param processId The process ID from uploadDocument
-     * @return Current status of the document
-     * @throws DocumentNotFoundException If the process ID doesn't exist
-     * @throws DataStudioException       For other errors
      */
     public UploadResult checkStatus(String processId) throws DataStudioException {
         logger.debug("Checking status for processId: {}", processId);
@@ -235,11 +155,6 @@ public class DocumentProcessorService {
 
     /**
      * Get the result of a processed document.
-     *
-     * @param processId The process ID
-     * @return The processing result
-     * @throws DocumentNotFoundException If the document doesn't exist
-     * @throws DataStudioException       If the document is still processing or other errors
      */
     public JSONObject getResult(String processId) throws DataStudioException {
         logger.debug("Getting result for processId: {}", processId);
@@ -247,51 +162,34 @@ public class DocumentProcessorService {
     }
 
     /**
-     * Poll for document result with exponential backoff.
+     * Wait for a previously uploaded document to reach a terminal state and return its full result.
+     *
+     * <p>Throws {@link DataStudioException} for failed/review_expired terminals (the SDK throws
+     * with {@code errorCode = "wait_timeout"} when {@code maxWait} is exceeded).
      */
-    private JSONObject pollForResult(String processId)
+    public JSONObject waitForResult(String processId)
             throws DataStudioException, InterruptedException {
 
-        long currentDelay = initialDelayMs;
-        int attempt = 0;
+        logger.info("Waiting for completion of processId: {} (pollInterval={}, maxWait={})",
+                processId, waitStrategy.pollInterval(), waitStrategy.maxWait());
 
-        while (attempt < maxAttempts) {
-            attempt++;
+        JSONObject statusPayload = sdk.waitForCompletion(processId, waitStrategy);
+        String terminalState = statusPayload.optString("status");
+        logger.info("Document {} reached terminal state: {}", processId, terminalState);
 
-            // Wait before checking status
-            Thread.sleep(currentDelay);
-
-            // Check status
-            UploadResult status = sdk.getStatus(processId);
-            logger.debug("Poll attempt {}/{}: status = {}", attempt, maxAttempts, status.status());
-
-            switch (status.status()) {
-                case UPLOADED:
-                    // Document is ready, get the result
-                    logger.info("Document processing completed, retrieving result");
-                    return sdk.getResult(processId);
-
-                case IN_PROGRESS:
-                    // Still processing, continue polling
-                    logger.info("Document still processing (attempt {}/{})", attempt, maxAttempts);
-                    break;
-
-                case FAILED:
-                    throw new DataStudioException("Document processing failed");
-            }
-
-            // Exponential backoff
-            currentDelay = Math.min((long) (currentDelay * BACKOFF_MULTIPLIER), maxDelayMs);
+        if (FAILED_TERMINAL_STATES.contains(terminalState)) {
+            String error = statusPayload.optString("error", "Document processing did not succeed");
+            throw new DataStudioException("Terminal state '" + terminalState + "': " + error);
+        }
+        if (!SUCCESSFUL_TERMINAL_STATES.contains(terminalState)) {
+            // Forward-compat: unknown terminals are treated as transient failures
+            // rather than silently returning a partial payload.
+            throw new DataStudioException("Unrecognized terminal state '" + terminalState + "'");
         }
 
-        throw new DataStudioException("Timeout waiting for document processing after " +
-                maxAttempts + " attempts");
+        return sdk.getResult(processId);
     }
 
-    /**
-     * Shutdown the executor service.
-     * Call this when you're done using the service.
-     */
     public void shutdown() {
         executorService.shutdown();
     }
