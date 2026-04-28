@@ -349,7 +349,9 @@ DataStudioSDK sdk = DataStudioSDK.Builder.aDataStudioSDK()
     .withEnvironment(Environments.PROD)
     .withWebhooks(
         new WebHook(Events.READY_FOR_REVIEW, "https://your-app.com/webhooks/ready"),
-        new WebHook(Events.COMPLETED, "https://your-app.com/webhooks/completed")
+        new WebHook(Events.COMPLETED, "https://your-app.com/webhooks/completed"),
+        // Added in 0.2.0-alpha. If not registered, failures route to the ready URL above.
+        new WebHook(Events.PROCESSING_FAILED, "https://your-app.com/webhooks/failed")
     )
     .build();
 ```
@@ -429,8 +431,15 @@ doc.getStructuredFieldAsString("invoice_number")
 | Status | Description |
 |--------|-------------|
 | `UPLOADED` | Document queued and ready for processing |
-| `IN_PROGRESS` | Document is being processed |
+| `IN_PROGRESS` | Generic in-progress state |
+| `OCR_PROCESSING` | OCR stage running *(0.2.0-alpha)* |
+| `AI_PROCESSING` | LLM extraction stage running *(0.2.0-alpha)* |
+| `READY_FOR_REVIEW` | Document is ready for human review |
+| `COMPLETED` | Processing finished successfully |
+| `REVIEW_EXPIRED` | Review window expired without action *(0.2.0-alpha)* |
 | `FAILED` | Processing failed |
+
+> Treat any unrecognized status value as still-in-progress for forward compatibility.
 
 ### Webhook Events
 
@@ -438,6 +447,35 @@ doc.getStructuredFieldAsString("invoice_number")
 |-------|-------------|
 | `document.ready_for_review` | Document processed, ready for human review |
 | `document.completed` | Document processing fully completed |
+| `document.processing_failed` | Processing failed *(0.2.0-alpha — falls back to ready-for-review URL if not registered)* |
+
+## Timeouts and Retries (`SdkConfig`)
+
+Since 0.2.0-alpha the SDK accepts an explicit `SdkConfig` that controls per-stage HTTP timeouts and the retry policy. This example builds it in `Application.buildSdkConfig()` — see that method's Javadoc for the full rationale of every value. Summary:
+
+```java
+ExponentialBackoffPolicy retryPolicy = new ExponentialBackoffPolicy.Builder()
+    .maxAttempts(3)                       // initial + up to 2 retries
+    .initialDelay(Duration.ofMillis(500)) // first retry after 500 ms
+    .maxDelay(Duration.ofSeconds(5))      // cap exponential growth at 5 s
+    .jitter(0.20)                         // ±20% to avoid thundering herd
+    .build();
+
+SdkConfig config = SdkConfig.builder()
+    .connectTimeout(Duration.ofSeconds(10))   // TCP + TLS
+    .uploadTimeout(Duration.ofSeconds(120))   // raised from 60 s default for slow links
+    .queryTimeout(Duration.ofSeconds(30))     // getStatus / getResult / webhook calls
+    .retryPolicy(retryPolicy)
+    .build();
+```
+
+**Key points to keep in mind**:
+
+- **Timeouts are per HTTP attempt, not per call.** With retries the worst-case wall time is roughly `maxAttempts * stageTimeout + sum(retryDelays)`. Plan caller deadlines accordingly.
+- **Only transient failures retry.** Network/timeout errors and 5xx responses retry; 4xx (validation, auth, idempotency conflicts) surface immediately.
+- **Retries are safe by default.** Every upload carries an `Idempotency-Key` (UUID v4) preserved across retries — the server deduplicates so you never upload twice.
+- **Pitfall — `SdkConfig.builder()` vs `SdkConfig.defaults()`:** `defaults()` ships with the exponential policy above; `builder()` defaults to **`NoRetryPolicy`** if you do not call `.retryPolicy(...)`. Always set the policy explicitly when starting from `builder()`.
+- **Opt out of retries entirely** with `new NoRetryPolicy()` — useful when you have stronger external idempotency guarantees and want errors to surface immediately.
 
 ## Integration Flow
 
@@ -578,9 +616,17 @@ try {
     // Server errors (HTTP 5xx)
     System.err.println("Server error (" + e.getStatusCode() + "): " + e.getMessage());
 
+} catch (IdempotencyConflictException e) {
+    // Added in 0.2.0-alpha — HTTP 409, another request with the same Idempotency-Key
+    // is still in flight. Back off and retry once it settles.
+    System.err.println("Idempotency conflict (request_id=" + e.getRequestId() + ")");
+
 } catch (DataStudioException e) {
-    // Other SDK errors
-    System.err.println("SDK error: " + e.getMessage());
+    // Other SDK errors. 0.2.0-alpha exposes:
+    //   e.getRequestId() — server-side correlation ID (quote on support tickets)
+    //   e.getErrorCode() — machine-readable code (e.g. "wait_timeout", "validation_failed")
+    System.err.println("SDK error: " + e.getMessage()
+        + " [code=" + e.getErrorCode() + ", request_id=" + e.getRequestId() + "]");
 }
 ```
 

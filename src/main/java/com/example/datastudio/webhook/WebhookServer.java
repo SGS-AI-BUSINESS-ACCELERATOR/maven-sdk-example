@@ -49,6 +49,7 @@ public class WebhookServer {
         // Also support /webhooks/* paths for flexibility
         server.createContext("/webhooks/ready", exchange -> handleWebhook(exchange, WebhookHandler.EVENT_READY_FOR_REVIEW));
         server.createContext("/webhooks/completed", exchange -> handleWebhook(exchange, WebhookHandler.EVENT_COMPLETED));
+        server.createContext("/webhooks/failed", exchange -> handleWebhook(exchange, WebhookHandler.EVENT_PROCESSING_FAILED));
 
         // Health check endpoint
         server.createContext("/health", this::handleHealth);
@@ -56,8 +57,9 @@ public class WebhookServer {
         server.start();
         logger.info("Webhook server started on port {}", port);
         logger.info("Listening for events:");
-        logger.info("  - POST /ready    -> {}", WebhookHandler.EVENT_READY_FOR_REVIEW);
-        logger.info("  - POST /completed -> {}", WebhookHandler.EVENT_COMPLETED);
+        logger.info("  - POST /webhooks/ready     -> {}", WebhookHandler.EVENT_READY_FOR_REVIEW);
+        logger.info("  - POST /webhooks/completed -> {}", WebhookHandler.EVENT_COMPLETED);
+        logger.info("  - POST /webhooks/failed    -> {}", WebhookHandler.EVENT_PROCESSING_FAILED);
     }
 
     /**

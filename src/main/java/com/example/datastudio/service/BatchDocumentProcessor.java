@@ -4,12 +4,14 @@ import ai.accelerator.CountryCode;
 import ai.accelerator.DataStudioSDK;
 import ai.accelerator.DataStudioSDK.*;
 import ai.accelerator.exceptions.DataStudioException;
+import ai.accelerator.wait.WaitStrategy;
 import com.example.datastudio.model.ProcessedDocument;
 import org.json.JSONObject;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.stream.Collectors;
@@ -47,10 +49,15 @@ public class BatchDocumentProcessor {
 
     private static final Logger logger = LoggerFactory.getLogger(BatchDocumentProcessor.class);
 
+    /** Default wait strategy applied to each document in the batch. */
+    private static final WaitStrategy DEFAULT_WAIT_STRATEGY =
+            new WaitStrategy(Duration.ofSeconds(2), Duration.ofMinutes(5));
+
     private final DataStudioSDK sdk;
     private final ExecutorService uploadExecutor;
     private final ScheduledExecutorService pollingExecutor;
     private final int maxConcurrentUploads;
+    private final WaitStrategy waitStrategy;
 
     /**
      * Create a new BatchDocumentProcessor with default settings.
@@ -68,8 +75,21 @@ public class BatchDocumentProcessor {
      * @param maxConcurrentUploads Maximum number of concurrent uploads
      */
     public BatchDocumentProcessor(DataStudioSDK sdk, int maxConcurrentUploads) {
+        this(sdk, maxConcurrentUploads, DEFAULT_WAIT_STRATEGY);
+    }
+
+    /**
+     * Create a new BatchDocumentProcessor with a custom {@link WaitStrategy}.
+     *
+     * @param sdk                  The initialized DataStudio SDK instance.
+     * @param maxConcurrentUploads Maximum number of concurrent uploads.
+     * @param waitStrategy         Wait strategy passed to {@code sdk.waitForCompletion(...)}
+     *                             for every document in the batch.
+     */
+    public BatchDocumentProcessor(DataStudioSDK sdk, int maxConcurrentUploads, WaitStrategy waitStrategy) {
         this.sdk = sdk;
         this.maxConcurrentUploads = maxConcurrentUploads;
+        this.waitStrategy = waitStrategy;
         this.uploadExecutor = Executors.newFixedThreadPool(maxConcurrentUploads);
         this.pollingExecutor = Executors.newScheduledThreadPool(2);
     }
@@ -140,36 +160,32 @@ public class BatchDocumentProcessor {
 
     /**
      * Upload and process a single document, waiting for the result.
+     *
+     * <p>Uses {@code sdk.waitForCompletion(...)} (added in 0.2.0-alpha) instead of a hand-rolled
+     * polling loop. The wait returns when the document reaches a terminal state
+     * ({@code completed}, {@code ready_for_review}, {@code failed}, {@code review_expired})
+     * or the {@link WaitStrategy} budget is exceeded — in which case the SDK throws a
+     * {@link DataStudioException} with {@code errorCode = "wait_timeout"}.
      */
     private ProcessedDocument uploadAndProcess(String userName,
                                                DocType docType,
                                                Path path,
                                                Map<String, String> metadata) {
         try {
-            // Upload
             UploadResult uploadResult = sdk.uploadDocument(userName, docType, path, metadata, CountryCode.ES);
             String processId = uploadResult.processId();
 
-            // Poll for result with exponential backoff
-            long delay = 2000;
-            int maxAttempts = 30;
+            JSONObject statusPayload = sdk.waitForCompletion(processId, waitStrategy);
+            String terminalState = statusPayload.optString("status");
 
-            for (int attempt = 0; attempt < maxAttempts; attempt++) {
-                Thread.sleep(delay);
-
-                UploadResult status = sdk.getStatus(processId);
-
-                if (status.status() == UploadResultStatus.UPLOADED) {
-                    JSONObject result = sdk.getResult(processId);
-                    return ProcessedDocument.fromJson(result);
-                } else if (status.status() == UploadResultStatus.FAILED) {
-                    throw new DataStudioException("Document processing failed: " + path);
-                }
-
-                delay = Math.min(delay * 2, 30000);
+            if ("failed".equals(terminalState) || "review_expired".equals(terminalState)) {
+                String error = statusPayload.optString("error", "did not succeed");
+                throw new DataStudioException(
+                        "Document " + path + " reached terminal state '" + terminalState + "': " + error);
             }
 
-            throw new DataStudioException("Timeout waiting for document: " + path);
+            JSONObject result = sdk.getResult(processId);
+            return ProcessedDocument.fromJson(result);
 
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();

@@ -72,6 +72,8 @@ public class WebhookHandler {
      */
     public static final String EVENT_READY_FOR_REVIEW = "document.ready_for_review";
     public static final String EVENT_COMPLETED = "document.completed";
+    /** Added in 0.2.0-alpha. If unregistered, failures are routed to the ready-for-review URL. */
+    public static final String EVENT_PROCESSING_FAILED = "document.processing_failed";
 
     private final Map<String, Consumer<JSONObject>> handlers = new ConcurrentHashMap<>();
     private final Map<String, CompletableFuture<JSONObject>> pendingResults = new ConcurrentHashMap<>();
@@ -103,6 +105,22 @@ public class WebhookHandler {
     public WebhookHandler onCompleted(Consumer<JSONObject> handler) {
         handlers.put(EVENT_COMPLETED, handler);
         logger.info("Registered handler for event: {}", EVENT_COMPLETED);
+        return this;
+    }
+
+    /**
+     * Register a handler for the {@code document.processing_failed} event (added in 0.2.0-alpha).
+     *
+     * <p>If you do not register this handler, failure deliveries fall back to the
+     * {@code ready_for_review} webhook URL — distinguish them by inspecting the
+     * {@code status} field ({@code "failed"}) or the {@code event} field.
+     *
+     * @param handler Consumer that receives the webhook payload (includes {@code error} string)
+     * @return this instance for fluent configuration
+     */
+    public WebhookHandler onProcessingFailed(Consumer<JSONObject> handler) {
+        handlers.put(EVENT_PROCESSING_FAILED, handler);
+        logger.info("Registered handler for event: {}", EVENT_PROCESSING_FAILED);
         return this;
     }
 
