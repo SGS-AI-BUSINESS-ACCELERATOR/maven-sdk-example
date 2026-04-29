@@ -7,6 +7,7 @@ import ai.accelerator.config.SdkConfig;
 import ai.accelerator.exceptions.*;
 import ai.accelerator.retry.ExponentialBackoffPolicy;
 import ai.accelerator.retry.NoRetryPolicy;
+import ai.accelerator.webhook.WebhookVerifier;
 import com.example.datastudio.config.DataStudioConfig;
 import com.example.datastudio.service.DocumentProcessorService;
 import com.example.datastudio.webhook.WebhookHandler;
@@ -110,19 +111,29 @@ public class Application {
      */
     private static DataStudioSDK initializeSDK(DataStudioConfig config) {
         logger.info("Initializing DataStudio SDK for environment: {}", config.environment());
-        logger.info("Configuring webhooks for URL: {}", config.webhookUrl());
 
-        return DataStudioSDK.Builder.aDataStudioSDK()
+        String readyUrl = config.webhookUrl() + "/ready";
+        String completedUrl = config.webhookUrl() + "/completed";
+        String failedUrl = config.webhookUrl() + "/failed";
+        logger.info("Registering webhooks against backend:");
+        logger.info("  ready_for_review    -> {}", readyUrl);
+        logger.info("  completed           -> {}", completedUrl);
+        logger.info("  processing_failed   -> {}", failedUrl);
+
+        DataStudioSDK sdk = DataStudioSDK.Builder.aDataStudioSDK()
                 .withApiKey(config.apiKey())
                 .withEnvironment(config.environment())
                 .withDefaultHeaders(config.defaultHeaders())
                 .withSdkConfig(buildSdkConfig())
                 .withWebhooks(
-                    new WebHook(Events.READY_FOR_REVIEW, config.webhookUrl() + "/ready"),
-                    new WebHook(Events.COMPLETED, config.webhookUrl() + "/completed"),
-                    new WebHook(Events.PROCESSING_FAILED, config.webhookUrl() + "/failed")
+                    new WebHook(Events.READY_FOR_REVIEW, readyUrl),
+                    new WebHook(Events.COMPLETED, completedUrl),
+                    new WebHook(Events.PROCESSING_FAILED, failedUrl)
                 )
                 .build();
+
+        logger.info("SDK build() returned without exception — webhook registration accepted (HTTP 201)");
+        return sdk;
     }
 
     /**
@@ -242,7 +253,15 @@ public class Application {
             webhookHandler.completeAnyPendingResult(payload);
         });
 
-        WebhookServer server = new WebhookServer(config.webhookPort(), webhookHandler);
+        WebhookVerifier verifier = null;
+        if (config.webhookSecret() != null && !config.webhookSecret().isBlank()) {
+            verifier = new WebhookVerifier(config.webhookSecret(), Duration.ofMinutes(5));
+            logger.info("Webhook signature verification enabled (5 min tolerance)");
+        } else {
+            logger.warn("DATASTUDIO_WEBHOOK_SECRET not set — inbound signatures will NOT be verified");
+        }
+
+        WebhookServer server = new WebhookServer(config.webhookPort(), webhookHandler, verifier);
         server.start();
 
         return server;
@@ -270,13 +289,56 @@ public class Application {
                 metadata,
                 CountryCode.ES
             );
-            logger.info("Document uploaded successfully");
-            System.out.println("\nDocument uploaded. Webhook events will be printed as they arrive.\n");
+            String processId = uploadResult.processId();
+            logger.info("Document uploaded successfully — processId={}, status={}",
+                    processId, uploadResult.status());
+            System.out.println("\nDocument uploaded.");
+            System.out.println("  processId : " + processId);
+            System.out.println("  status    : " + uploadResult.status());
+            System.out.println("Webhook events will be printed as they arrive.\n");
+
+            startStatusHeartbeat(processor, processId);
 
         } catch (DataStudioException e) {
             handleDataStudioError(e);
             System.exit(1);
         }
+    }
+
+    /**
+     * Background poller that prints {@code getStatus(processId)} every 10s until terminal.
+     *
+     * <p>Purpose: surface whether the backend has finished processing even when no webhook
+     * arrives. If the doc reaches {@code completed}/{@code ready_for_review}/{@code failed}
+     * but our /webhooks endpoint stays silent → the issue is in webhook delivery (stale URL
+     * registration, tenant/secret mismatch), not in our local server.
+     */
+    private static void startStatusHeartbeat(DocumentProcessorService processor, String processId) {
+        Thread t = new Thread(() -> {
+            java.util.Set<String> terminal = java.util.Set.of(
+                    "COMPLETED", "READY_FOR_REVIEW", "FAILED", "REVIEW_EXPIRED");
+            while (!Thread.currentThread().isInterrupted()) {
+                try {
+                    UploadResult st = processor.checkStatus(processId);
+                    String status = String.valueOf(st.status());
+                    logger.info("[heartbeat] processId={} status={}", processId, status);
+                    if (terminal.contains(status)) {
+                        logger.info("[heartbeat] terminal state reached. If no webhook fires within ~30s, " +
+                                "the registered URL is likely stale on the backend side.");
+                        return;
+                    }
+                    Thread.sleep(10_000);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    return;
+                } catch (Exception e) {
+                    logger.warn("[heartbeat] status check failed: {}", e.getMessage());
+                    try { Thread.sleep(10_000); } catch (InterruptedException ie) { return; }
+                }
+            }
+        }, "status-heartbeat");
+        t.setDaemon(true);
+        t.start();
     }
 
     /**
@@ -353,9 +415,10 @@ public class Application {
         System.err.println("     export DATASTUDIO_WEBHOOK_URL=https://your-ngrok-url.ngrok-free.app/webhooks");
         System.err.println("");
         System.err.println("  2. Optional environment variables:");
-        System.err.println("     export DATASTUDIO_ENVIRONMENT=SAND_BOX  # or PROD");
-        System.err.println("     export DATASTUDIO_USER=your_username    # default: example-user");
-        System.err.println("     export DATASTUDIO_WEBHOOK_PORT=8080     # default: 8080");
+        System.err.println("     export DATASTUDIO_ENVIRONMENT=SAND_BOX        # or PROD");
+        System.err.println("     export DATASTUDIO_USER=your_username          # default: example-user");
+        System.err.println("     export DATASTUDIO_WEBHOOK_PORT=8080           # default: 8080");
+        System.err.println("     export DATASTUDIO_WEBHOOK_SECRET=whsec_...    # enables HMAC verification");
         System.err.println("");
         System.err.println("  3. Run the application:");
         System.err.println("     mvn exec:java -Dexec.args=\"/path/to/document.pdf\"");
