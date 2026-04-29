@@ -1,5 +1,8 @@
 package com.example.datastudio.webhook;
 
+import ai.accelerator.exceptions.WebhookVerificationException;
+import ai.accelerator.webhook.VerificationResult;
+import ai.accelerator.webhook.WebhookVerifier;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import org.slf4j.Logger;
@@ -17,24 +20,45 @@ import java.util.concurrent.Executors;
  *
  * <p>This server starts automatically when webhooks are configured and listens
  * for incoming POST requests on the configured endpoints.
+ *
+ * <p>When constructed with a non-null {@link WebhookVerifier}, every inbound POST
+ * is HMAC-verified using the {@code X-SGS-Timestamp} and {@code X-SGS-Signature}
+ * headers (see SDK doc § Webhook Signature Verification). Mismatched, stale, or
+ * unsigned deliveries are rejected with HTTP 401 before the handler runs.
  */
 public class WebhookServer {
 
     private static final Logger logger = LoggerFactory.getLogger(WebhookServer.class);
 
+    private static final String SIGNATURE_HEADER = "X-SGS-Signature";
+    private static final String TIMESTAMP_HEADER = "X-SGS-Timestamp";
+
     private final int port;
     private final WebhookHandler handler;
+    private final WebhookVerifier verifier;
     private HttpServer server;
 
     /**
-     * Create a new webhook server.
+     * Create a new webhook server with no signature verification.
      *
      * @param port    The port to listen on
      * @param handler The webhook handler to process incoming events
      */
     public WebhookServer(int port, WebhookHandler handler) {
+        this(port, handler, null);
+    }
+
+    /**
+     * Create a new webhook server.
+     *
+     * @param port     The port to listen on
+     * @param handler  The webhook handler to process incoming events
+     * @param verifier Optional HMAC verifier; when {@code null}, signatures are not checked
+     */
+    public WebhookServer(int port, WebhookHandler handler, WebhookVerifier verifier) {
         this.port = port;
         this.handler = handler;
+        this.verifier = verifier;
     }
 
     /**
@@ -60,6 +84,11 @@ public class WebhookServer {
         logger.info("  - POST /webhooks/ready     -> {}", WebhookHandler.EVENT_READY_FOR_REVIEW);
         logger.info("  - POST /webhooks/completed -> {}", WebhookHandler.EVENT_COMPLETED);
         logger.info("  - POST /webhooks/failed    -> {}", WebhookHandler.EVENT_PROCESSING_FAILED);
+        if (verifier != null) {
+            logger.info("HMAC verification: ENABLED (X-SGS-Signature / X-SGS-Timestamp)");
+        } else {
+            logger.warn("HMAC verification: DISABLED — set DATASTUDIO_WEBHOOK_SECRET to enable");
+        }
     }
 
     /**
@@ -86,9 +115,35 @@ public class WebhookServer {
         }
 
         try {
-            String payload = readRequestBody(exchange);
-            logger.info("Received {} webhook, raw payload: {}", eventType, payload);
+            byte[] rawPayload = readRequestBodyBytes(exchange);
+            logger.info("Received {} webhook ({} bytes)", eventType, rawPayload.length);
 
+            if (verifier != null) {
+                String signature = exchange.getRequestHeaders().getFirst(SIGNATURE_HEADER);
+                String timestamp = exchange.getRequestHeaders().getFirst(TIMESTAMP_HEADER);
+
+                if (signature == null || timestamp == null) {
+                    logger.warn("Rejecting unsigned {} delivery (missing {}/{})",
+                            eventType, SIGNATURE_HEADER, TIMESTAMP_HEADER);
+                    logger.warn("Incoming headers were:");
+                    exchange.getRequestHeaders().forEach((name, values) ->
+                            logger.warn("  {} = {}", name, values));
+                    sendResponse(exchange, 401, "Missing signature headers");
+                    return;
+                }
+
+                try {
+                    VerificationResult vr = verifier.verify(rawPayload, timestamp, signature);
+                    logger.info("Signature OK for {} (signedAt={})", eventType, vr.signedAt());
+                } catch (WebhookVerificationException e) {
+                    logger.warn("Signature verification FAILED for {}: {}", eventType, e.getMessage());
+                    sendResponse(exchange, 401, "Invalid signature: " + e.getMessage());
+                    return;
+                }
+            }
+
+            String payload = new String(rawPayload, StandardCharsets.UTF_8);
+            logger.debug("Verified payload: {}", payload);
             boolean handled = handler.handleWebhook(eventType, payload);
 
             if (handled) {
@@ -114,9 +169,9 @@ public class WebhookServer {
         sendResponse(exchange, 200, "{\"status\":\"healthy\"}");
     }
 
-    private String readRequestBody(HttpExchange exchange) throws IOException {
+    private byte[] readRequestBodyBytes(HttpExchange exchange) throws IOException {
         try (InputStream is = exchange.getRequestBody()) {
-            return new String(is.readAllBytes(), StandardCharsets.UTF_8);
+            return is.readAllBytes();
         }
     }
 

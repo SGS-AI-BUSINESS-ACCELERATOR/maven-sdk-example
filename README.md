@@ -11,6 +11,7 @@ This project demonstrates how to integrate the **SGS AI DataStudio Java S
 - [Configuration](#configuration)
 - [Usage Examples](#usage-examples)
 - [API Reference](#api-reference)
+- [Webhook Signature Verification](#webhook-signature-verification)
 - [Integration Flow](#integration-flow)
 - [Error Handling](#error-handling)
 - [Best Practices](#best-practices)
@@ -84,9 +85,10 @@ export DATASTUDIO_API_KEY=your_api_key_here
 export DATASTUDIO_WEBHOOK_URL=https://your-ngrok-url.ngrok-free.app/webhooks
 
 # Optional
-export DATASTUDIO_ENVIRONMENT=SAND_BOX  # or PROD
+export DATASTUDIO_ENVIRONMENT=SAND_BOX             # or PROD
 export DATASTUDIO_USER=your_username
-export DATASTUDIO_WEBHOOK_PORT=8080     # default: 8080
+export DATASTUDIO_WEBHOOK_PORT=8080                # default: 8080
+export DATASTUDIO_WEBHOOK_SECRET=whsec_xxxxxxxx    # enables HMAC signature verification
 ```
 
 ### 4. Build the Project
@@ -144,8 +146,14 @@ Copy the `https://...ngrok-free.app` URL.
 # Required
 export DATASTUDIO_API_KEY=your_api_key_here
 
-# Configure ngrok URL for webhooks
+# Configure ngrok URL for webhooks (must end in /webhooks — that is the path
+# the embedded server listens on, see WebhookServer.java).
 export DATASTUDIO_WEBHOOK_URL=https://abc123.ngrok-free.app/webhooks
+
+# Optional — when set, every inbound webhook is HMAC-verified using the
+# X-SGS-Signature / X-SGS-Timestamp headers. Get this value from the Portal
+# (or POST /webhooks/secret/rotate). See "Webhook Signature Verification".
+export DATASTUDIO_WEBHOOK_SECRET=whsec_xxxxxxxx
 
 # Optional
 export DATASTUDIO_ENVIRONMENT=SAND_BOX
@@ -216,10 +224,11 @@ src/main/java/com/example/datastudio/
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
 | `DATASTUDIO_API_KEY` | Yes | - | Your API key for authentication |
-| `DATASTUDIO_WEBHOOK_URL` | Yes | - | Base URL for webhook endpoints (e.g., ngrok URL) |
+| `DATASTUDIO_WEBHOOK_URL` | Yes | - | Base URL for webhook endpoints (e.g., ngrok URL). Must end in `/webhooks` because the embedded server listens on `/webhooks/{ready,completed,failed}` |
 | `DATASTUDIO_ENVIRONMENT` | No | `SAND_BOX` | Environment: `PROD` or `SAND_BOX` |
 | `DATASTUDIO_USER` | No | `example-user` | Username for document tracking |
 | `DATASTUDIO_WEBHOOK_PORT` | No | `8080` | Port for the embedded webhook server |
+| `DATASTUDIO_WEBHOOK_SECRET` | No | - | HMAC signing secret (`whsec_…`). When set, the embedded server verifies every inbound webhook using the SDK's `WebhookVerifier` and rejects mismatched/stale deliveries with HTTP 401. See [Webhook Signature Verification](#webhook-signature-verification) |
 
 ### Programmatic Configuration
 
@@ -448,6 +457,88 @@ doc.getStructuredFieldAsString("invoice_number")
 | `document.ready_for_review` | Document processed, ready for human review |
 | `document.completed` | Document processing fully completed |
 | `document.processing_failed` | Processing failed *(0.2.0-alpha — falls back to ready-for-review URL if not registered)* |
+
+## Webhook Signature Verification
+
+Every webhook delivered by api-gw is **HMAC-SHA256 signed** when the tenant has a signing secret configured. Each delivery carries:
+
+| Header | Value |
+|---|---|
+| `X-SGS-Timestamp` | Unix epoch seconds at signing time |
+| `X-SGS-Signature` | `v1=<hex>` — `HMAC_SHA256(secret, "<timestamp>.<raw_body>")` |
+
+Verifying the signature is **mandatory in production** — without it, anyone who learns your webhook URL can forge deliveries.
+
+### How this example wires it up
+
+`WebhookServer` (see `src/main/java/com/example/datastudio/webhook/WebhookServer.java`) accepts an optional `WebhookVerifier` from the SDK. When constructed with one, every inbound POST goes through:
+
+1. Read raw request bytes (do **not** re-serialize JSON — whitespace and field order changes break the HMAC).
+2. Read `X-SGS-Signature` and `X-SGS-Timestamp` headers; if either is missing, respond `401`.
+3. Call `verifier.verify(rawBody, timestamp, signature)`. The SDK throws `WebhookVerificationException` on stale timestamp (default tolerance: 5 minutes), signature mismatch, or malformed timestamp; we catch it and respond `401`.
+4. Only on success does the parsed payload reach the registered handler.
+
+`Application` builds the verifier from `DATASTUDIO_WEBHOOK_SECRET` and passes it to the server:
+
+```java
+WebhookVerifier verifier = null;
+if (config.webhookSecret() != null && !config.webhookSecret().isBlank()) {
+    verifier = new WebhookVerifier(config.webhookSecret(), Duration.ofMinutes(5));
+}
+WebhookServer server = new WebhookServer(config.webhookPort(), webhookHandler, verifier);
+```
+
+If you do not set `DATASTUDIO_WEBHOOK_SECRET`, the server logs a `WARN` on startup and accepts unsigned deliveries — fine for early experiments, **never acceptable in production**.
+
+### Setting it up end-to-end
+
+1. **Register your webhooks first**, then **rotate the secret**. The order matters — see the note below. The SDK builder registers your URLs automatically when `.withWebhooks(...)` is configured (i.e. on every app start).
+2. Mint a signing secret:
+
+   ```bash
+   curl -sS -X POST \
+     "https://api.docannotator.datastudio-dev.sgsaccelerator.ai/v1/webhooks/secret/rotate" \
+     -H "X-API-Key: $DATASTUDIO_API_KEY"
+   ```
+
+   The response contains a fresh `whsec_…` value — copy it now, it is not retrievable later.
+3. Export it and (re)launch the app:
+
+   ```bash
+   export DATASTUDIO_WEBHOOK_SECRET=whsec_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+   mvn exec:java -Dexec.args="src/main/resources/examples/export-declaration/example_custom_export.pdf"
+   ```
+
+4. Upload a document. On delivery you should see, in the embedded server logs:
+
+   ```
+   Received document.ready_for_review webhook (1045 bytes)
+   Signature OK for document.ready_for_review (signedAt=2026-04-29T13:01:52Z)
+   ```
+
+### Order matters: register webhooks first, then rotate
+
+The signing secret is per-tenant and is stored on the webhook configs themselves. As of api-gw fix #2206, `POST /webhooks` preserves the existing tenant's `Secret`, `SecretPrevious`, `SigningEnabled`, and `SecretRotatedAt` across re-registration — so the SDK calling `withWebhooks(...)` on every app start no longer wipes signing state.
+
+However, **rotation only takes effect on configs that already exist**. If you rotate before registering any webhooks, the new secret has nothing to attach to and is effectively dropped. Do it in this order:
+
+1. Run the app once so the SDK registers your webhook URLs.
+2. Call `POST /webhooks/secret/rotate` to mint and persist a secret onto those configs.
+3. Set `DATASTUDIO_WEBHOOK_SECRET` and relaunch.
+
+### Manual signature verification (smoke test)
+
+If you want to confirm the verifier without a real webhook, sign a payload yourself with your secret and feed it to the embedded server. The signing scheme is:
+
+```
+v1=hex( HMAC_SHA256( secret_utf8, "<unix_ts>.<raw_body_bytes>" ) )
+```
+
+Anything else — an extra newline, a different field order, missing `v1=` prefix — will fail with `signature mismatch`.
+
+### Secret rotation
+
+`POST /webhooks/secret/rotate` returns both the new `secret` and the prior one as `secret_previous` for a grace window. The current SDK accepts a single secret per `WebhookVerifier` instance — during a rollover, instantiate two verifiers (one per secret) and accept the delivery if either verifies. A future SDK release may bake this in directly.
 
 ## Timeouts and Retries (`SdkConfig`)
 
@@ -698,6 +789,15 @@ This may be a cached failure. Maven caches failed resolution attempts and won't 
    ```
 
 The `-U` flag forces Maven to check for updated releases and snapshots.
+
+### Webhook Not Arriving / 401 on Delivery
+
+When `DATASTUDIO_WEBHOOK_SECRET` is set, the embedded server enforces signature verification. Common failure modes:
+
+- **`Rejecting unsigned … delivery (missing X-SGS-Signature/X-SGS-Timestamp)`** — the backend is delivering unsigned. The tenant either has no signing secret yet, or the secret was wiped (e.g. by a `POST /webhooks` re-registration before api-gw fix #2206). Rotate the secret again *after* the URLs are registered, then update `DATASTUDIO_WEBHOOK_SECRET`.
+- **`Signature verification FAILED … signature mismatch`** — the secret on your end does not match what api-gw is signing with. Likely you copied a previous rotation's secret. Rotate again and use the new value.
+- **`Signature verification FAILED … timestamp outside tolerance window`** — the receiver clock is skewed by more than 5 minutes from the signer. Sync system time (NTP) or widen `Duration.ofMinutes(5)` in `Application.startWebhookServer(...)`.
+- **No delivery at all (ngrok inspector at `localhost:4040` shows `0 requests`)** — the registered URL is not what you think. Check the `Registering webhooks against backend` log line on startup; it must print the exact ngrok public URL with `/webhooks/{ready,completed,failed}` paths. If ngrok was restarted, its subdomain changed and your previous registration is dead — relaunch the app to re-register.
 
 ### Authentication Issues
 

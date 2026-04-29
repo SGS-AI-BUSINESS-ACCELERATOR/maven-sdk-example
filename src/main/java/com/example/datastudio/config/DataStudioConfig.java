@@ -17,6 +17,9 @@ import java.util.Map;
  * <ul>
  *   <li>DATASTUDIO_API_KEY - Required: Your API key</li>
  *   <li>DATASTUDIO_WEBHOOK_URL - Required: Base URL for webhooks (e.g., ngrok URL)</li>
+ *   <li>DATASTUDIO_WEBHOOK_SECRET - Optional: HMAC signing secret (whsec_...). When set,
+ *       inbound webhooks are verified using {@code X-SGS-Signature} / {@code X-SGS-Timestamp}
+ *       headers; mismatched or stale deliveries are rejected with HTTP 401.</li>
  *   <li>DATASTUDIO_ENVIRONMENT - Optional: PROD or SAND_BOX (default: SAND_BOX)</li>
  *   <li>DATASTUDIO_USER - Optional: Username for document tracking</li>
  *   <li>DATASTUDIO_WEBHOOK_PORT - Optional: Port for webhook server (default: 8080)</li>
@@ -27,6 +30,7 @@ import java.util.Map;
  * @param userName       The username for document tracking
  * @param webhookUrl     The base URL for webhook endpoints (required)
  * @param webhookPort    The port for the embedded webhook server (default: 8080)
+ * @param webhookSecret  Optional HMAC signing secret (whsec_...). May be {@code null} to skip verification.
  * @param defaultHeaders Custom headers to include in all SDK requests (can be empty)
  */
 public record DataStudioConfig(
@@ -35,6 +39,7 @@ public record DataStudioConfig(
         String userName,
         String webhookUrl,
         int webhookPort,
+        String webhookSecret,
         Map<String, String> defaultHeaders
 ) {
 
@@ -73,8 +78,11 @@ public record DataStudioConfig(
         );
         String userName = getOptionalEnv("DATASTUDIO_USER", "example-user");
         int webhookPort = parsePort(getOptionalEnv("DATASTUDIO_WEBHOOK_PORT", "8080"));
+        String webhookSecret = System.getenv("DATASTUDIO_WEBHOOK_SECRET");
 
-        return new DataStudioConfig(apiKey, environment, userName, webhookUrl, webhookPort, Map.of());
+        return new DataStudioConfig(
+                apiKey, environment, userName, webhookUrl, webhookPort, webhookSecret, Map.of()
+        );
     }
 
     /**
@@ -86,7 +94,9 @@ public record DataStudioConfig(
      * @return Configuration for sandbox
      */
     public static DataStudioConfig forSandbox(String apiKey, String webhookUrl) {
-        return new DataStudioConfig(apiKey, Environments.SAND_BOX, "test-user", webhookUrl, 8080, Map.of());
+        return new DataStudioConfig(
+                apiKey, Environments.SAND_BOX, "test-user", webhookUrl, 8080, null, Map.of()
+        );
     }
 
     /**
@@ -98,7 +108,9 @@ public record DataStudioConfig(
      * @return Configuration for production
      */
     public static DataStudioConfig forProduction(String apiKey, String userName, String webhookUrl) {
-        return new DataStudioConfig(apiKey, Environments.PROD, userName, webhookUrl, 8080, Map.of());
+        return new DataStudioConfig(
+                apiKey, Environments.PROD, userName, webhookUrl, 8080, null, Map.of()
+        );
     }
 
     /**
@@ -108,7 +120,9 @@ public record DataStudioConfig(
      * @return New configuration with the specified port
      */
     public DataStudioConfig withWebhookPort(int port) {
-        return new DataStudioConfig(apiKey, environment, userName, webhookUrl, port, defaultHeaders);
+        return new DataStudioConfig(
+                apiKey, environment, userName, webhookUrl, port, webhookSecret, defaultHeaders
+        );
     }
 
     /**
@@ -118,7 +132,9 @@ public record DataStudioConfig(
      * @return New configuration with the specified headers
      */
     public DataStudioConfig withDefaultHeaders(Map<String, String> headers) {
-        return new DataStudioConfig(apiKey, environment, userName, webhookUrl, webhookPort, headers);
+        return new DataStudioConfig(
+                apiKey, environment, userName, webhookUrl, webhookPort, webhookSecret, headers
+        );
     }
 
     private static String getRequiredEnv(String name) {
